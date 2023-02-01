@@ -103,8 +103,54 @@ static int parse_number(context* c, value* v) {
     return PARSE_OK;
 }
 
+/*
+解析十六进制
+*/
+static const char* parse_hex4(const char* p, unsigned* u) {
+    *u = 0;
+    for (int i = 0; i<4; i++) {
+        char ch = *p++;
+        *u <<= 4;
+        if      (ch >= '0' && ch <= '9')  *u |= ch - '0';
+        else if (ch >= 'A' && ch <= 'F')  *u |= ch - ('A' - 10);
+        else if (ch >= 'a' && ch <= 'f')  *u |= ch - ('a' - 10);
+        else return NULL;
+    }
+    return p;
+}
+
+/*
+编码utf-8
+*/
+static void encode_utf8(context* c, unsigned u) {
+    if (u <= 0x7F) 
+        PUTC(c, u & 0xFF);
+    else if (u <= 0x7FF) {
+        PUTC(c, 0xC0 | ((u >> 6) & 0xFF));
+        PUTC(c, 0x80 | ( u       & 0x3F));
+    }
+    else if (u <= 0xFFFF) {
+        PUTC(c, 0xE0 | ((u >> 12) & 0xFF));
+        PUTC(c, 0x80 | ((u >>  6) & 0x3F));
+        PUTC(c, 0x80 | ( u        & 0x3F));
+    }
+    else {
+        assert(u <= 0x10FFFF);
+        PUTC(c, 0xF0 | ((u >> 18) & 0xFF));
+        PUTC(c, 0x80 | ((u >> 12) & 0x3F));
+        PUTC(c, 0x80 | ((u >>  6) & 0x3F));
+        PUTC(c, 0x80 | ( u        & 0x3F));
+    }
+}
+
+#define STRING_ERROR(err) do{ c->top = head; return err; }while(0)
+
+/*
+解析字符串
+*/
 static int parse_string(context* c, value* v) {
     size_t head = c->top, len;
+    unsigned u, u2;
     const char* p;
     EXPECT(c, '\"');
     p = c->json;
@@ -127,18 +173,32 @@ static int parse_string(context* c, value* v) {
                     case 'n':  PUTC(c, '\n'); break;
                     case 'r':  PUTC(c, '\r'); break;
                     case 't':  PUTC(c, '\t'); break;
+                    case 'u':
+                        if (!(p = parse_hex4(p, &u))) {
+                            STRING_ERROR(PARSE_INVALID_UNICODE_HEX);
+                        }
+                        if (u >= 0xD800 && u <= 0xDBFF) { /* surrogate pair */
+                            if (*p++ != '\\')
+                                STRING_ERROR(PARSE_INVALID_UNICODE_SURROGATE);
+                            if (*p++ != 'u')
+                                STRING_ERROR(PARSE_INVALID_UNICODE_SURROGATE);
+                            if (!(p = parse_hex4(p, &u2)))
+                                STRING_ERROR(PARSE_INVALID_UNICODE_HEX);
+                            if (u2 < 0xDC00 || u2 > 0xDFFF)
+                                STRING_ERROR(PARSE_INVALID_UNICODE_SURROGATE);
+                            u = (((u - 0xD800) << 10) | (u2 - 0xDC00)) + 0x10000;
+                        }
+                        encode_utf8(c, u);
+                        break;
                     default:
-                        c->top = head;
-                        return PARSE_INVALID_STRING_ESCAPE;
+                        STRING_ERROR(PARSE_INVALID_STRING_ESCAPE);
                 }
                 break;
         case '\0':
-            c->top = head;
-            return PARSE_MISS_QUOTATION_MARK;
+            STRING_ERROR(PARSE_MISS_QUOTATION_MARK);
         default:
             if ((unsigned char)ch < 0x20) { 
-                c->top = head;
-                return PARSE_INVALID_STRING_CHAR;
+                STRING_ERROR(PARSE_INVALID_STRING_CHAR);
             }
             PUTC(c, ch);
         }
