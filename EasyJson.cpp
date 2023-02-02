@@ -205,6 +205,52 @@ static int parse_string(context* c, value* v) {
     }
 }
 
+static int parse_value(context* c, value* v);/*前向声明*/
+
+static int parse_array(context* c, value* v) {
+    size_t i, size = 0;
+    int ret;
+    EXPECT(c, '[');
+    parse_whitespace(c);
+
+    if (*c->json == ']') {
+        c->json++;
+        v->type = EASYJson_ARRAY;
+        v->u.a.size = 0;
+        v->u.a.e = NULL;
+        return PARSE_OK;
+    }
+    for(;;) {
+        value e;
+        init(&e);
+        if ((ret = parse_value(c ,&e)) != PARSE_OK)
+            break;
+        memcpy(context_push(c, sizeof(value)), &e, sizeof(value));
+        size++;
+
+        parse_whitespace(c);
+        if (*c->json == ',') {
+            c->json ++;
+            parse_whitespace(c);
+        }
+        else if (*c->json == ']') {
+            c->json++;
+            v->type = EASYJson_ARRAY;
+            v->u.a.size = size;
+            size *= sizeof(value);
+            memcpy(v->u.a.e = (value*)malloc(size), context_pop(c, size), size);
+            return PARSE_OK;
+        }
+        else {
+            ret = PARSE_MISS_COMMA_OR_SQUARE_BRACKET;
+            break;
+        }
+    }
+    for (int i = 0; i < size; i++)
+        Free((value*)context_pop(c, sizeof(value)));
+    return ret;
+}
+
 static int parse_value(context* c, value* v) {
     switch (*c->json)
     {
@@ -218,6 +264,8 @@ static int parse_value(context* c, value* v) {
         return parse_number(c, v);
     case '"':
         return parse_string(c, v);
+    case '[':
+        return parse_array(c, v);
     case '\0':
         return PARSE_EXPECT_VALUE;
     }
@@ -247,9 +295,20 @@ int parse(EasyJson::value* v, const char* json) {
 }
 
 void Free(value* v) {
+    size_t i;
     assert(v != NULL);
-    if (v->type == EASYJson_STRING)
+    switch (v->type)
+    {
+    case EASYJson_STRING:
         free(v->u.s.s);
+        break;
+    case EASYJson_ARRAY:
+        for (i = 0; i < v->u.a.size; i++) Free(&v->u.a.e[i]);
+        free(v->u.a.e);
+        break;
+    default:
+        break;
+    }
     v->type = EASYJson_NULL;
 }
 
@@ -299,4 +358,14 @@ void set_string(value* v, const char* s, size_t len) {
     v->type = EASYJson_STRING; 
 }
 
+size_t get_array_size(const value* v) {
+    assert(v != NULL && v->type == EASYJson_ARRAY);
+    return v->u.a.size;
+}
+
+value* get_array_element(const value* v, size_t index) {
+    assert(v != NULL && v->type == EASYJson_ARRAY);
+    assert(index < v->u.a.size);
+    return &v->u.a.e[index];
+}
 }

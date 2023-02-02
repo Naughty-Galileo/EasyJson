@@ -31,6 +31,11 @@ static int test_pass = 0;
 #define EXPECT_TRUE(actual) EXPECT_EQ_BASE((actual) != 0, "true", "false", "%s")
 #define EXPECT_FALSE(actual) EXPECT_EQ_BASE((actual) == 0, "false", "true", "%s")
 
+#if defined(_MSC_VER)
+#define EXPECT_EQ_SIZE_T(expect, actual) EXPECT_EQ_BASE((expect) == (actual), (size_t)expect, (size_t)actual, "%Iu")
+#else
+#define EXPECT_EQ_SIZE_T(expect, actual) EXPECT_EQ_BASE((expect) == (actual), (size_t)expect, (size_t)actual, "%zu")
+#endif
 
 #define TEST_ERROR(error, json) \
     do { \
@@ -122,6 +127,13 @@ static void test_parse_string() {
     TEST_STRING("Hello", "\"Hello\"");
     TEST_STRING("Hello\nWorld", "\"Hello\\nWorld\"");
     TEST_STRING("\" \\ / \b \f \n \r \t", "\"\\\" \\\\ \\/ \\b \\f \\n \\r \\t\"");
+
+    TEST_STRING("Hello\0World", "\"Hello\\u0000World\"");
+    TEST_STRING("\x24", "\"\\u0024\"");         /* Dollar sign U+0024 */
+    TEST_STRING("\xC2\xA2", "\"\\u00A2\"");     /* Cents sign U+00A2 */
+    TEST_STRING("\xE2\x82\xAC", "\"\\u20AC\""); /* Euro sign U+20AC */
+    TEST_STRING("\xF0\x9D\x84\x9E", "\"\\uD834\\uDD1E\"");  /* G clef sign U+1D11E */
+    TEST_STRING("\xF0\x9D\x84\x9E", "\"\\ud834\\udd1e\"");
 }
 
 static void test_parse_expect_value() {
@@ -142,6 +154,10 @@ static void test_parse_invalid_value() {
     TEST_ERROR(PARSE_INVALID_VALUE, "inf");
     TEST_ERROR(PARSE_INVALID_VALUE, "NAN");
     TEST_ERROR(PARSE_INVALID_VALUE, "nan");
+
+    /* invalid value in array */
+    TEST_ERROR(PARSE_INVALID_VALUE, "[1,]");
+    TEST_ERROR(PARSE_INVALID_VALUE, "[\"a\", nul]");
 }
 
 static void test_parse_root_not_singular() {
@@ -173,6 +189,77 @@ static void test_parse_invalid_string_escape() {
 static void test_parse_invalid_string_char() {
     TEST_ERROR(PARSE_INVALID_STRING_CHAR, "\"\x01\"");
     TEST_ERROR(PARSE_INVALID_STRING_CHAR, "\"\x1F\"");
+}
+
+static void test_parse_invalid_unicode_hex() {
+    TEST_ERROR(PARSE_INVALID_UNICODE_HEX, "\"\\u\"");
+    TEST_ERROR(PARSE_INVALID_UNICODE_HEX, "\"\\u0\"");
+    TEST_ERROR(PARSE_INVALID_UNICODE_HEX, "\"\\u01\"");
+    TEST_ERROR(PARSE_INVALID_UNICODE_HEX, "\"\\u012\"");
+    TEST_ERROR(PARSE_INVALID_UNICODE_HEX, "\"\\u/000\"");
+    TEST_ERROR(PARSE_INVALID_UNICODE_HEX, "\"\\uG000\"");
+    TEST_ERROR(PARSE_INVALID_UNICODE_HEX, "\"\\u0/00\"");
+    TEST_ERROR(PARSE_INVALID_UNICODE_HEX, "\"\\u0G00\"");
+    TEST_ERROR(PARSE_INVALID_UNICODE_HEX, "\"\\u00/0\"");
+    TEST_ERROR(PARSE_INVALID_UNICODE_HEX, "\"\\u00G0\"");
+    TEST_ERROR(PARSE_INVALID_UNICODE_HEX, "\"\\u000/\"");
+    TEST_ERROR(PARSE_INVALID_UNICODE_HEX, "\"\\u000G\"");
+    TEST_ERROR(PARSE_INVALID_UNICODE_HEX, "\"\\u 123\"");
+}
+
+static void test_parse_invalid_unicode_surrogate() {
+    TEST_ERROR(PARSE_INVALID_UNICODE_SURROGATE, "\"\\uD800\"");
+    TEST_ERROR(PARSE_INVALID_UNICODE_SURROGATE, "\"\\uDBFF\"");
+    TEST_ERROR(PARSE_INVALID_UNICODE_SURROGATE, "\"\\uD800\\\\\"");
+    TEST_ERROR(PARSE_INVALID_UNICODE_SURROGATE, "\"\\uD800\\uDBFF\"");
+    TEST_ERROR(PARSE_INVALID_UNICODE_SURROGATE, "\"\\uD800\\uE000\"");
+}
+
+static void test_parse_array() {
+    size_t i, j;
+    value v;
+
+    init(&v);
+    EXPECT_EQ_INT(PARSE_OK, parse(&v, "[ ]"));
+    EXPECT_EQ_INT(EASYJson_ARRAY, get_type(&v));
+    EXPECT_EQ_SIZE_T(0, get_array_size(&v));
+    Free(&v);
+
+    init(&v);
+    EXPECT_EQ_INT(PARSE_OK, parse(&v, "[ null , false , true , 123 , \"abc\" ]"));
+    EXPECT_EQ_INT(EASYJson_ARRAY, get_type(&v));
+    EXPECT_EQ_SIZE_T(5, get_array_size(&v));
+    EXPECT_EQ_INT(EASYJson_NULL,   get_type(get_array_element(&v, 0)));
+    EXPECT_EQ_INT(EASYJson_FALSE,  get_type(get_array_element(&v, 1)));
+    EXPECT_EQ_INT(EASYJson_TRUE,   get_type(get_array_element(&v, 2)));
+    EXPECT_EQ_INT(EASYJson_NUMBER, get_type(get_array_element(&v, 3)));
+    EXPECT_EQ_INT(EASYJson_STRING, get_type(get_array_element(&v, 4)));
+    EXPECT_EQ_DOUBLE(123.0, get_number(get_array_element(&v, 3)));
+    EXPECT_EQ_STRING("abc", get_string(get_array_element(&v, 4)), get_string_length(get_array_element(&v, 4)));
+    Free(&v);
+
+    init(&v);
+    EXPECT_EQ_INT(PARSE_OK, parse(&v, "[ [ ] , [ 0 ] , [ 0 , 1 ] , [ 0 , 1 , 2 ] ]"));
+    EXPECT_EQ_INT(EASYJson_ARRAY, get_type(&v));
+    EXPECT_EQ_SIZE_T(4, get_array_size(&v));
+    for (i = 0; i < 4; i++) {
+        value* a = get_array_element(&v, i);
+        EXPECT_EQ_INT(EASYJson_ARRAY, get_type(a));
+        EXPECT_EQ_SIZE_T(i, get_array_size(a));
+        for (j = 0; j < i; j++) {
+            value* e = get_array_element(a, j);
+            EXPECT_EQ_INT(EASYJson_NUMBER, get_type(e));
+            EXPECT_EQ_DOUBLE((double)j, get_number(e));
+        }
+    }
+    Free(&v);
+}
+
+static void test_parse_miss_comma_or_square_bracket() {
+    TEST_ERROR(PARSE_MISS_COMMA_OR_SQUARE_BRACKET, "[1");
+    TEST_ERROR(PARSE_MISS_COMMA_OR_SQUARE_BRACKET, "[1}");
+    TEST_ERROR(PARSE_MISS_COMMA_OR_SQUARE_BRACKET, "[1 2");
+    TEST_ERROR(PARSE_MISS_COMMA_OR_SQUARE_BRACKET, "[[]");
 }
 
 static void test_access_null() {
@@ -219,6 +306,7 @@ static void test_parse() {
     test_parse_true();
     test_parse_false();
     test_parse_number();
+    test_parse_string();
     test_parse_expect_value();
     test_parse_invalid_value();
     test_parse_root_not_singular();
@@ -232,6 +320,12 @@ static void test_parse() {
     test_access_boolean();
     test_access_number();
     test_access_string();
+
+    test_parse_invalid_unicode_hex();
+    test_parse_invalid_unicode_surrogate();
+
+    test_parse_array();
+    test_parse_miss_comma_or_square_bracket();
 }
 
 
