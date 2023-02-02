@@ -15,6 +15,7 @@ enum type {
 };
 
 typedef struct value value;
+typedef struct member member;
 
 struct value{
     type type;
@@ -32,10 +33,24 @@ struct value{
             value* e;
             size_t size;
         } a;
+        //对象
+        struct
+        {
+            member* m;
+            size_t size;
+        }o;
         // 数字
         double n;
     }u;    
 };
+
+struct member
+{
+    char* k;      // 键
+    size_t klen; // 值
+    value v;
+};
+
 
 enum STATE {
     PARSE_OK = 0,
@@ -48,12 +63,16 @@ enum STATE {
     PARSE_INVALID_STRING_CHAR,
     PARSE_INVALID_UNICODE_HEX,
     PARSE_INVALID_UNICODE_SURROGATE,
-    PARSE_MISS_COMMA_OR_SQUARE_BRACKET
+    PARSE_MISS_COMMA_OR_SQUARE_BRACKET,
+    PARSE_MISS_KEY,
+    PARSE_MISS_COLON,
+    PARSE_MISS_COMMA_OR_CURLY_BRACKET
 };
 
 #define init(v) do { (v)->type = EASYJson_NULL; } while(0)
 
 int parse(value* v, const char* json);
+char* stringify(const value* v, size_t* length);
 
 void Free(value* v);
 
@@ -73,6 +92,11 @@ void set_string(value* v, const char* s, size_t len);
 
 size_t get_array_size(const value* v);
 value* get_array_element(const value* v, size_t index);
+
+size_t get_object_size(const value* v);
+const char* get_object_key(const value* v, size_t index);
+size_t get_object_key_length(const value* v, size_t index);
+value* get_object_value(const value* v, size_t index);
 }
 
 #endif
